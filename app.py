@@ -7,7 +7,7 @@ import calendar
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Analizador de CTR y Conversión - Google Analytics",
+    page_title="Analizador de CTR - Google Analytics",
     page_icon="📊",
     layout="wide"
 )
@@ -123,9 +123,6 @@ def process_monthly_data(monthly_files, data_type):
                 elif data_type == 'users':
                     value_col = find_column(df, ['total_usuarios', 'usuarios', 'total users', 'total de usuarios', 'usuarios únicos', 'usuarios_unicos'])
                     col_name = 'total_users'
-                elif data_type == 'forms':
-                    value_col = find_column(df, ['form_submit', 'formularios', 'envios', 'formularios_enviados', 'total de usuarios', 'total_usuarios', 'usuarios'])
-                    col_name = 'form_submissions'
                 
                 if page_col and value_col:
                     month_df = df[[page_col, value_col]].copy()
@@ -163,7 +160,7 @@ def create_trend_chart(df, metric, title):
     
     fig.update_layout(
         xaxis_title="Mes",
-        yaxis_title=f"{metric} (%)" if 'CTR' in metric or 'Conversión' in metric else metric,
+        yaxis_title=f"{metric} (%)" if 'CTR' in metric else metric,
         hovermode='x unified'
     )
     
@@ -204,9 +201,9 @@ def create_heatmap(df, metric, title):
 
 def main():
     # Título y descripción
-    st.title("📊 Analizador Temporal de CTR y Conversión Efectiva - Google Analytics")
+    st.title("📊 Analizador Temporal de CTR - Google Analytics")
     st.markdown("""
-    Esta herramienta analiza la evolución temporal del rendimiento de tus landing pages, permitiendo cargar datos mensuales desde enero para obtener insights profundos sobre tendencias y estacionalidad.
+    Esta herramienta analiza la evolución temporal del Click Through Rate (CTR) de tus landing pages, permitiendo cargar datos mensuales desde enero para obtener insights profundos sobre tendencias y estacionalidad.
     """)
 
     # Selector de modo de análisis
@@ -221,12 +218,11 @@ def main():
         st.subheader("🗓️ Carga de Datos Mensuales")
         
         # Crear tabs para cada tipo de archivo
-        tab1, tab2, tab3 = st.tabs(["📈 Clicks CTA", "👥 Usuarios", "📝 Formularios"])
+        tab1, tab2 = st.tabs(["📈 Clicks CTA", "👥 Usuarios"])
         
         # Diccionarios para almacenar archivos mensuales
         monthly_cta_files = {}
         monthly_users_files = {}
-        monthly_forms_files = {}
         
         months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
                  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -249,21 +245,11 @@ def main():
                     key=f"users_{month}"
                 )
         
-        with tab3:
-            st.markdown("**Carga los archivos CSV de formularios enviados por mes:**")
-            for month in months:
-                monthly_forms_files[month] = st.file_uploader(
-                    f"Formularios - {month.capitalize()}", 
-                    type=['csv'], 
-                    key=f"forms_{month}"
-                )
-        
         # Verificar qué meses tienen datos completos
         complete_months = []
         for month in months:
             if (monthly_cta_files[month] is not None and 
-                monthly_users_files[month] is not None and 
-                monthly_forms_files[month] is not None):
+                monthly_users_files[month] is not None):
                 complete_months.append(month)
         
         if len(complete_months) >= 2:
@@ -273,20 +259,16 @@ def main():
                 # Procesar datos por tipo
                 cta_data = process_monthly_data(monthly_cta_files, 'cta')
                 users_data = process_monthly_data(monthly_users_files, 'users')
-                forms_data = process_monthly_data(monthly_forms_files, 'forms')
                 
-                if not cta_data.empty and not users_data.empty and not forms_data.empty:
+                if not cta_data.empty and not users_data.empty:
                     # Consolidar todos los datos
                     merged_monthly = users_data.merge(cta_data, on=['landing_page', 'mes'], how='left')
-                    merged_monthly = merged_monthly.merge(forms_data, on=['landing_page', 'mes'], how='left')
                     
                     # Rellenar valores nulos
                     merged_monthly['cta_clicks'] = merged_monthly['cta_clicks'].fillna(0).astype(int)
-                    merged_monthly['form_submissions'] = merged_monthly['form_submissions'].fillna(0).astype(int)
                     
-                    # Calcular métricas
+                    # Calcular CTR
                     merged_monthly['CTR'] = (merged_monthly['cta_clicks'] / merged_monthly['total_users'] * 100).round(2)
-                    merged_monthly['Conversión_Efectiva'] = (merged_monthly['form_submissions'] / merged_monthly['total_users'] * 100).round(2)
                     
                     # Análisis temporal
                     st.markdown("---")
@@ -296,9 +278,7 @@ def main():
                     monthly_summary = merged_monthly.groupby('mes').agg({
                         'total_users': 'sum',
                         'cta_clicks': 'sum', 
-                        'form_submissions': 'sum',
-                        'CTR': 'mean',
-                        'Conversión_Efectiva': 'mean'
+                        'CTR': 'mean'
                     }).round(2)
                     
                     # Ordenar por mes
@@ -312,36 +292,19 @@ def main():
                         monthly_summary.style.format({
                             'total_users': '{:,.0f}',
                             'cta_clicks': '{:,.0f}',
-                            'form_submissions': '{:,.0f}',
-                            'CTR': '{:.2f}%',
-                            'Conversión_Efectiva': '{:.2f}%'
+                            'CTR': '{:.2f}%'
                         }),
                         use_container_width=True
                     )
                     
-                    # Gráficos de tendencias
-                    col1, col2 = st.columns(2)
+                    # Gráfico de tendencias
+                    fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
+                    st.plotly_chart(fig_ctr, use_container_width=True)
                     
-                    with col1:
-                        fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
-                        st.plotly_chart(fig_ctr, use_container_width=True)
-                    
-                    with col2:
-                        fig_conversion = create_trend_chart(merged_monthly, 'Conversión_Efectiva', 'Evolución de la Conversión Efectiva por Mes')
-                        st.plotly_chart(fig_conversion, use_container_width=True)
-                    
-                    # Heatmaps
-                    st.subheader("🔥 Mapas de Calor - Top 10 Landing Pages")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        fig_heatmap_ctr = create_heatmap(merged_monthly, 'CTR', 'Heatmap CTR por Landing Page y Mes')
-                        st.plotly_chart(fig_heatmap_ctr, use_container_width=True)
-                    
-                    with col2:
-                        fig_heatmap_conv = create_heatmap(merged_monthly, 'Conversión_Efectiva', 'Heatmap Conversión Efectiva por Landing Page y Mes')
-                        st.plotly_chart(fig_heatmap_conv, use_container_width=True)
+                    # Heatmap
+                    st.subheader("🔥 Mapa de Calor - Top 10 Landing Pages")
+                    fig_heatmap_ctr = create_heatmap(merged_monthly, 'CTR', 'Heatmap CTR por Landing Page y Mes')
+                    st.plotly_chart(fig_heatmap_ctr, use_container_width=True)
                     
                     # Análisis de mejor y peor rendimiento
                     st.subheader("🏆 Análisis de Rendimiento")
@@ -355,10 +318,10 @@ def main():
                         st.metric("Mes", best_ctr_month.capitalize(), f"{best_ctr_value:.2f}%")
                     
                     with col2:
-                        st.write("**🏅 Mejor Mes por Conversión:**")
-                        best_conv_month = monthly_summary['Conversión_Efectiva'].idxmax()
-                        best_conv_value = monthly_summary.loc[best_conv_month, 'Conversión_Efectiva']
-                        st.metric("Mes", best_conv_month.capitalize(), f"{best_conv_value:.2f}%")
+                        st.write("**📉 Peor Mes por CTR:**")
+                        worst_ctr_month = monthly_summary['CTR'].idxmin()
+                        worst_ctr_value = monthly_summary.loc[worst_ctr_month, 'CTR']
+                        st.metric("Mes", worst_ctr_month.capitalize(), f"{worst_ctr_value:.2f}%")
                     
                     with col3:
                         st.write("**📊 Crecimiento CTR:**")
@@ -380,17 +343,15 @@ def main():
                         filtered_data = merged_monthly
                     
                     # Mostrar datos filtrados
-                    display_columns = ['mes', 'landing_page', 'total_users', 'cta_clicks', 'CTR', 'form_submissions', 'Conversión_Efectiva']
+                    display_columns = ['mes', 'landing_page', 'total_users', 'cta_clicks', 'CTR']
                     display_df = filtered_data[display_columns].copy()
-                    display_df.columns = ['Mes', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)', 'Formularios Enviados', 'Conversión Efectiva (%)']
+                    display_df.columns = ['Mes', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
                     
                     st.dataframe(
                         display_df.style.format({
                             'Total Usuarios': '{:,.0f}',
                             'Clicks CTA': '{:,.0f}',
-                            'CTR (%)': '{:.2f}%',
-                            'Formularios Enviados': '{:,.0f}',
-                            'Conversión Efectiva (%)': '{:.2f}%'
+                            'CTR (%)': '{:.2f}%'
                         }),
                         use_container_width=True
                     )
@@ -399,7 +360,7 @@ def main():
                     st.download_button(
                         label="📥 Descargar análisis temporal completo como CSV",
                         data=merged_monthly.to_csv(index=False),
-                        file_name=f"analisis_temporal_ctr_conversion_{datetime.now().strftime('%Y%m%d')}.csv",
+                        file_name=f"analisis_temporal_ctr_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv",
                         help="Descarga todos los datos del análisis temporal"
                     )
@@ -415,9 +376,21 @@ def main():
         st.markdown("---")
         st.subheader("📊 Análisis de Un Período Específico")
         
+        # Información sobre los archivos requeridos
+        with st.expander("ℹ️ Información sobre los archivos CSV requeridos"):
+            st.markdown("""
+            **Para el análisis necesitas 2 archivos CSV:**
+            
+            1. **Clicks CTA**: Datos de usuarios que hicieron click en el Call to Action
+            2. **Usuarios**: Total de usuarios únicos que visitaron cada landing page  
+            
+            **Métrica calculada:**
+            - **CTR**: (Clicks CTA / Total Usuarios) × 100
+            """)
+        
         # Sección de carga de archivos
         st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("📈 Datos de Clicks CTA (CSV)")
@@ -431,20 +404,13 @@ def main():
             if users_file:
                 st.success("✅ Archivo de usuarios cargado correctamente")
         
-        with col3:
-            st.subheader("📝 Datos de Formularios Enviados (CSV)")
-            form_file = st.file_uploader("Carga el CSV de formularios enviados", type=['csv'], key="forms_single")
-            if form_file:
-                st.success("✅ Archivo de formularios enviados cargado correctamente")
-        
         st.markdown('</div>', unsafe_allow_html=True)
 
-        if cta_file and users_file and form_file:
+        if cta_file and users_file:
             with st.spinner('Procesando archivos...'):
                 try:
                     cta_df = read_csv_with_header_detection_and_clean(cta_file)
                     users_df = read_csv_with_header_detection_and_clean(users_file)
-                    form_df = read_csv_with_header_detection_and_clean(form_file)
                 except Exception as e:
                     st.error(f"Error al leer los archivos CSV: {e}")
                     return
@@ -452,92 +418,81 @@ def main():
                 # Normalizar nombres de columnas para evitar errores por mayúsculas/minúsculas
                 cta_df.columns = [col.strip().lower() for col in cta_df.columns]
                 users_df.columns = [col.strip().lower() for col in users_df.columns]
-                form_df.columns = [col.strip().lower() for col in form_df.columns]
 
                 cta_page_col = find_column(cta_df, ['page_path', 'pagina', 'url', 'ruta'])
                 cta_clicks_col = find_column(cta_df, ['cta_clicks', 'clicks', 'clics', 'clicks_cta', 'total de usuarios', 'total_usuarios'])
                 users_page_col = find_column(users_df, ['page_path', 'pagina', 'url', 'ruta'])
                 users_total_col = find_column(users_df, ['total_usuarios', 'usuarios', 'total users', 'total de usuarios', 'usuarios únicos', 'usuarios_unicos'])
-                form_page_col = find_column(form_df, ['page_path', 'pagina', 'url', 'ruta'])
-                form_submit_col = find_column(form_df, ['form_submit', 'formularios', 'envios', 'formularios_enviados', 'total de usuarios', 'total_usuarios', 'usuarios'])
 
-                if not all([cta_page_col, cta_clicks_col, users_page_col, users_total_col, form_page_col, form_submit_col]):
+                if not all([cta_page_col, cta_clicks_col, users_page_col, users_total_col]):
                     st.error("No se encontraron las columnas necesarias en los archivos CSV.")
                     return
 
                 # Filtrar solo las columnas necesarias y limpiar datos
                 cta_df = cta_df[[cta_page_col, cta_clicks_col]].copy()
                 users_df = users_df[[users_page_col, users_total_col]].copy()
-                form_df = form_df[[form_page_col, form_submit_col]].copy()
                 
                 cta_df.columns = ['landing_page', 'cta_clicks']
                 users_df.columns = ['landing_page', 'total_users']
-                form_df.columns = ['landing_page', 'form_submissions']
 
                 # Limpiar espacios y convertir a minúsculas para merge
                 cta_df['landing_page'] = clean_column(cta_df, 'landing_page')
                 users_df['landing_page'] = clean_column(users_df, 'landing_page')
-                form_df['landing_page'] = clean_column(form_df, 'landing_page')
 
                 # Eliminar filas vacías o con valores nulos
                 cta_df = cta_df.dropna(subset=['landing_page', 'cta_clicks'])
                 users_df = users_df.dropna(subset=['landing_page', 'total_users'])
-                form_df = form_df.dropna(subset=['landing_page', 'form_submissions'])
 
                 # Convertir a numérico los valores (si hay error, poner 0)
                 cta_df['cta_clicks'] = pd.to_numeric(cta_df['cta_clicks'], errors='coerce').fillna(0).astype(int)
                 users_df['total_users'] = pd.to_numeric(users_df['total_users'], errors='coerce').fillna(0).astype(int)
-                form_df['form_submissions'] = pd.to_numeric(form_df['form_submissions'], errors='coerce').fillna(0).astype(int)
 
                 # Unir los datos por landing_page
                 merged_df = pd.merge(users_df, cta_df, on='landing_page', how='left')
-                merged_df = pd.merge(merged_df, form_df, on='landing_page', how='left')
                 
                 # Rellenar valores nulos con 0
                 merged_df['cta_clicks'] = merged_df['cta_clicks'].fillna(0).astype(int)
-                merged_df['form_submissions'] = merged_df['form_submissions'].fillna(0).astype(int)
                 
-                # Calcular métricas
+                # Calcular CTR
                 merged_df['CTR'] = (merged_df['cta_clicks'] / merged_df['total_users'] * 100).round(2)
-                merged_df['Conversión_Efectiva'] = (merged_df['form_submissions'] / merged_df['total_users'] * 100).round(2)
 
             # Métricas principales
             st.markdown('<div class="result-section">', unsafe_allow_html=True)
             st.subheader("📊 Métricas Principales")
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Landing Pages", len(merged_df))
             with col2:
                 st.metric("Total Clicks CTA", f"{merged_df['cta_clicks'].sum():,}")
             with col3:
-                st.metric("Total Formularios", f"{merged_df['form_submissions'].sum():,}")
-            with col4:
                 st.metric("CTR Promedio", f"{merged_df['CTR'].mean():.2f}%")
-            with col5:
-                st.metric("Conversión Efectiva Promedio", f"{merged_df['Conversión_Efectiva'].mean():.2f}%")
 
             # Tabla de resultados
             st.subheader("📋 Resultados Detallados")
             
-            display_df = merged_df[['landing_page', 'total_users', 'cta_clicks', 'CTR', 'form_submissions', 'Conversión_Efectiva']].copy()
-            display_df.columns = ['Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)', 'Formularios Enviados', 'Conversión Efectiva (%)']
+            display_df = merged_df[['landing_page', 'total_users', 'cta_clicks', 'CTR']].copy()
+            display_df.columns = ['Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
             
             st.dataframe(
                 display_df.style.format({
                     'Total Usuarios': '{:,.0f}',
                     'Clicks CTA': '{:,.0f}',
-                    'CTR (%)': '{:.2f}%',
-                    'Formularios Enviados': '{:,.0f}',
-                    'Conversión Efectiva (%)': '{:.2f}%'
+                    'CTR (%)': '{:.2f}%'
                 }),
                 use_container_width=True
             )
+
+            # Top 5 Landing Pages por CTR
+            st.subheader("🏆 Top 5 Landing Pages por CTR")
+            top_ctr = merged_df.nlargest(5, 'CTR')[['landing_page', 'CTR']]
+            top_ctr.columns = ['Landing Page', 'CTR (%)']
+            st.dataframe(top_ctr.style.format({'CTR (%)': '{:.2f}%'}))
 
             # Opción para descargar
             st.download_button(
                 label="📥 Descargar resultados como CSV",
                 data=merged_df.to_csv(index=False),
-                file_name="ctr_conversion_analysis_single.csv",
+                file_name="ctr_analysis_single.csv",
                 mime="text/csv"
             )
             st.markdown('</div>', unsafe_allow_html=True)
