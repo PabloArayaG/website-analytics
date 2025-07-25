@@ -79,7 +79,7 @@ def read_csv_with_header_detection_and_clean(file):
     header = [h.strip().lower() for h in lines[header_row].split(delimiter)]
     
     # Determinar si es formato de 2 o 3 columnas
-    has_source = len(header) >= 3 and any(col in header for col in ['fuente', 'source', 'canal', 'channel', 'medium'])
+    has_source = len(header) >= 3 and any(col in header for col in ['fuente', 'fuente de la sesión', 'source', 'canal', 'channel', 'medium'])
     
     # Leer solo las filas válidas (ignorando totales y vacíos)
     data = []
@@ -143,7 +143,7 @@ def process_monthly_data(monthly_files, data_type):
                 
                 # Encontrar columnas relevantes según el tipo de datos
                 page_col = find_column(df, ['page_path', 'pagina', 'url', 'ruta'])
-                source_col = find_column(df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source else None
+                source_col = find_column(df, ['fuente', 'fuente de la sesión', 'source', 'canal', 'channel', 'medium']) if has_source else None
                 
                 if data_type == 'cta':
                     value_col = find_column(df, ['cta_clicks', 'clicks', 'clics', 'clicks_cta', 'total de usuarios', 'total_usuarios'])
@@ -840,8 +840,8 @@ def main():
                 users_total_col = find_column(users_df, ['total_usuarios', 'usuarios', 'total users', 'total de usuarios', 'usuarios únicos', 'usuarios_unicos'])
                 
                 # Buscar columnas de fuente si existen
-                cta_source_col = find_column(cta_df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source_cta else None
-                users_source_col = find_column(users_df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source_users else None
+                cta_source_col = find_column(cta_df, ['fuente', 'fuente de la sesión', 'source', 'canal', 'channel', 'medium']) if has_source_cta else None
+                users_source_col = find_column(users_df, ['fuente', 'fuente de la sesión', 'source', 'canal', 'channel', 'medium']) if has_source_users else None
 
                 if not all([cta_page_col, cta_clicks_col, users_page_col, users_total_col]):
                     st.error("No se encontraron las columnas necesarias en los archivos CSV.")
