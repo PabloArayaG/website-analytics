@@ -655,18 +655,6 @@ def main():
                 st.plotly_chart(fig_top, use_container_width=True)
             
             with col2:
-                # Distribución del CTR
-                fig_dist = create_ctr_distribution(merged_df, 'Distribución del CTR')
-                st.plotly_chart(fig_dist, use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Scatter plot
-                fig_scatter = create_scatter_plot(merged_df, 'Relación Usuarios vs Clicks CTA')
-                st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            with col2:
                 # Distribución de tráfico
                 fig_traffic = create_traffic_distribution(merged_df, 'Distribución de Tráfico por Landing Page')
                 st.plotly_chart(fig_traffic, use_container_width=True)
