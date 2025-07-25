@@ -55,6 +55,7 @@ st.markdown("""
 def read_csv_with_header_detection_and_clean(file):
     """
     Lee un CSV detectando automáticamente la fila donde empiezan los encabezados y filtra solo filas válidas.
+    Maneja tanto formato de 2 columnas (page_path, valor) como 3 columnas (fuente, page_path, valor).
     """
     import io
     import csv
@@ -70,27 +71,50 @@ def read_csv_with_header_detection_and_clean(file):
             break
     if header_row is None:
         raise ValueError("No se encontró la fila de encabezados en el archivo CSV. Asegúrate de que exista una fila con los nombres de las columnas.")
+    
     # Detectar delimitador
     delimiter = ',' if lines[header_row].count(',') >= lines[header_row].count(';') else ';'
+    
+    # Obtener nombres de columnas del encabezado
+    header = [h.strip().lower() for h in lines[header_row].split(delimiter)]
+    
+    # Determinar si es formato de 2 o 3 columnas
+    has_source = len(header) >= 3 and any(col in header for col in ['fuente', 'source', 'canal', 'channel', 'medium'])
+    
     # Leer solo las filas válidas (ignorando totales y vacíos)
     data = []
     reader = csv.reader(lines[header_row+1:], delimiter=delimiter)
     for row in reader:
-        # Tomar solo las dos primeras columnas si hay más
-        row = row[:2]
-        if len(row) < 2:
-            continue
-        page, value = row[0].strip(), row[1].strip()
-        # Ignorar filas vacías, totales o encabezados
-        if not page or page.lower() == 'total' or page.lower() == 'totales' or page == ',' or page == '' or page == ' ':
-            continue
-        if value.lower() == 'total' or value.lower() == 'totales':
-            continue
-        data.append([page, value])
-    # Obtener nombres de columnas del encabezado
-    header = [h.strip().lower() for h in lines[header_row].split(delimiter)[:2]]
-    df = pd.DataFrame(data, columns=header)
-    return df
+        if has_source:
+            # Formato de 3 columnas: fuente, page_path, valor
+            if len(row) < 3:
+                continue
+            source, page, value = row[0].strip(), row[1].strip(), row[2].strip()
+            # Ignorar filas vacías, totales o encabezados
+            if not page or page.lower() == 'total' or page.lower() == 'totales' or page == '':
+                continue
+            if value.lower() == 'total' or value.lower() == 'totales':
+                continue
+            data.append([source, page, value])
+        else:
+            # Formato de 2 columnas: page_path, valor
+            if len(row) < 2:
+                continue
+            page, value = row[0].strip(), row[1].strip()
+            # Ignorar filas vacías, totales o encabezados
+            if not page or page.lower() == 'total' or page.lower() == 'totales' or page == '':
+                continue
+            if value.lower() == 'total' or value.lower() == 'totales':
+                continue
+            data.append([page, value])
+    
+    # Crear DataFrame con las columnas correctas
+    if has_source:
+        df = pd.DataFrame(data, columns=header[:3])
+    else:
+        df = pd.DataFrame(data, columns=header[:2])
+    
+    return df, has_source
 
 def clean_column(df, col):
     # Elimina espacios, convierte a string y a minúsculas
@@ -107,15 +131,19 @@ def process_monthly_data(monthly_files, data_type):
     Procesa los archivos mensuales y devuelve un DataFrame consolidado
     """
     all_monthly_data = []
+    has_source_data = False
     
     for month_name, file in monthly_files.items():
         if file is not None:
             try:
-                df = read_csv_with_header_detection_and_clean(file)
+                df, has_source = read_csv_with_header_detection_and_clean(file)
+                if has_source:
+                    has_source_data = True
                 df.columns = [col.strip().lower() for col in df.columns]
                 
                 # Encontrar columnas relevantes según el tipo de datos
                 page_col = find_column(df, ['page_path', 'pagina', 'url', 'ruta'])
+                source_col = find_column(df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source else None
                 
                 if data_type == 'cta':
                     value_col = find_column(df, ['cta_clicks', 'clicks', 'clics', 'clicks_cta', 'total de usuarios', 'total_usuarios'])
@@ -125,8 +153,15 @@ def process_monthly_data(monthly_files, data_type):
                     col_name = 'total_users'
                 
                 if page_col and value_col:
-                    month_df = df[[page_col, value_col]].copy()
-                    month_df.columns = ['landing_page', col_name]
+                    if has_source and source_col:
+                        month_df = df[[source_col, page_col, value_col]].copy()
+                        month_df.columns = ['fuente', 'landing_page', col_name]
+                        month_df['fuente'] = clean_column(month_df, 'fuente')
+                    else:
+                        month_df = df[[page_col, value_col]].copy()
+                        month_df.columns = ['landing_page', col_name]
+                        month_df['fuente'] = 'no especificado'  # Valor por defecto
+                    
                     month_df['landing_page'] = clean_column(month_df, 'landing_page')
                     month_df = month_df.dropna(subset=['landing_page', col_name])
                     month_df[col_name] = pd.to_numeric(month_df[col_name], errors='coerce').fillna(0).astype(int)
@@ -138,8 +173,9 @@ def process_monthly_data(monthly_files, data_type):
                 continue
     
     if all_monthly_data:
-        return pd.concat(all_monthly_data, ignore_index=True)
-    return pd.DataFrame()
+        result_df = pd.concat(all_monthly_data, ignore_index=True)
+        return result_df, has_source_data
+    return pd.DataFrame(), False
 
 def create_trend_chart(df, metric, title):
     """
@@ -162,6 +198,60 @@ def create_trend_chart(df, metric, title):
         xaxis_title="Mes",
         yaxis_title=f"{metric} (%)" if 'CTR' in metric else metric,
         hovermode='x unified'
+    )
+    
+    return fig
+
+def create_source_trend_chart(df, metric, title):
+    """
+    Crea un gráfico de tendencias mensuales por fuente
+    """
+    # Agrupar por mes y fuente
+    source_monthly = df.groupby(['mes', 'fuente'])[metric].mean().reset_index()
+    
+    # Ordenar por mes
+    month_order = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    source_monthly['mes'] = pd.Categorical(source_monthly['mes'], categories=month_order, ordered=True)
+    source_monthly = source_monthly.sort_values('mes')
+    
+    fig = px.line(source_monthly, x='mes', y=metric, color='fuente',
+                  title=title,
+                  markers=True)
+    
+    fig.update_layout(
+        xaxis_title="Mes",
+        yaxis_title=f"{metric} (%)" if 'CTR' in metric else metric,
+        hovermode='x unified'
+    )
+    
+    return fig
+
+def create_source_performance_chart(df, title):
+    """
+    Crea un gráfico de barras del CTR promedio por fuente
+    """
+    source_performance = df.groupby('fuente').agg({
+        'CTR': 'mean',
+        'total_users': 'sum',
+        'cta_clicks': 'sum'
+    }).round(2).reset_index()
+    
+    source_performance = source_performance.sort_values('CTR', ascending=True)
+    
+    fig = px.bar(source_performance, 
+                 x='CTR', 
+                 y='fuente', 
+                 orientation='h',
+                 title=title,
+                 color='CTR',
+                 color_continuous_scale='Blues',
+                 hover_data=['total_users', 'cta_clicks'])
+    
+    fig.update_layout(
+        yaxis_title="Fuente de Tráfico",
+        xaxis_title="CTR Promedio (%)",
+        height=400
     )
     
     return fig
@@ -239,6 +329,35 @@ def create_heatmap(df, metric, title):
     fig.update_layout(
         xaxis_title="Mes",
         yaxis_title="Landing Page"
+    )
+    
+    return fig
+
+def create_source_heatmap(df, metric, title):
+    """
+    Crea un heatmap de fuentes vs meses
+    """
+    pivot_data = df.pivot_table(
+        values=metric, 
+        index='fuente', 
+        columns='mes', 
+        fill_value=0
+    )
+    
+    # Ordenar columnas por mes
+    month_order = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    available_months = [month for month in month_order if month in pivot_data.columns]
+    pivot_data = pivot_data[available_months]
+    
+    fig = px.imshow(pivot_data, 
+                    title=title,
+                    aspect='auto',
+                    color_continuous_scale='Viridis')
+    
+    fig.update_layout(
+        xaxis_title="Mes",
+        yaxis_title="Fuente de Tráfico"
     )
     
     return fig
@@ -332,6 +451,19 @@ def create_traffic_distribution(df, title):
     
     return fig
 
+def create_source_distribution(df, title):
+    """
+    Crea un gráfico de pastel para distribución de tráfico por fuente
+    """
+    source_totals = df.groupby('fuente')['total_users'].sum().reset_index()
+    
+    fig = px.pie(source_totals, 
+                 values='total_users', 
+                 names='fuente',
+                 title=title)
+    
+    return fig
+
 def create_gauge_chart(value, title):
     """
     Crea un gráfico de gauge para CTR promedio
@@ -364,7 +496,7 @@ def main():
     # Título y descripción
     st.title("📊 Analizador Temporal de CTR - Google Analytics")
     st.markdown("""
-    Esta herramienta analiza la evolución temporal del Click Through Rate (CTR) de tus landing pages, permitiendo cargar datos mensuales desde enero para obtener insights profundos sobre tendencias y estacionalidad.
+    Esta herramienta analiza la evolución temporal del Click Through Rate (CTR) de tus landing pages, con soporte para **análisis por fuente de tráfico** (Facebook, Google, LinkedIn, etc.).
     """)
 
     # Selector de modo de análisis
@@ -377,6 +509,20 @@ def main():
     if analysis_mode == "📅 Análisis Temporal (Por Meses)":
         st.markdown("---")
         st.subheader("🗓️ Carga de Datos Mensuales")
+        
+        # Información sobre formatos soportados
+        with st.expander("ℹ️ Formatos de archivos CSV soportados"):
+            st.markdown("""
+            **Formato con fuente de tráfico (recomendado):**
+            - `Fuente de la sesión` | `page_path` | `Total de usuarios`
+            - Ejemplo: `facebook` | `/landing-page` | `1250`
+            
+            **Formato básico:**
+            - `page_path` | `Total de usuarios`
+            - Ejemplo: `/landing-page` | `1250`
+            
+            ⚡ **La app detecta automáticamente** el formato de tus archivos.
+            """)
         
         # Crear tabs para cada tipo de archivo
         tab1, tab2 = st.tabs(["📈 Clicks CTA", "👥 Usuarios"])
@@ -418,12 +564,18 @@ def main():
             
             with st.spinner('Procesando datos mensuales...'):
                 # Procesar datos por tipo
-                cta_data = process_monthly_data(monthly_cta_files, 'cta')
-                users_data = process_monthly_data(monthly_users_files, 'users')
+                cta_data, has_source_cta = process_monthly_data(monthly_cta_files, 'cta')
+                users_data, has_source_users = process_monthly_data(monthly_users_files, 'users')
+                
+                # Determinar si tenemos datos de fuente
+                has_source_analysis = has_source_cta or has_source_users
                 
                 if not cta_data.empty and not users_data.empty:
                     # Consolidar todos los datos
-                    merged_monthly = users_data.merge(cta_data, on=['landing_page', 'mes'], how='left')
+                    if has_source_analysis:
+                        merged_monthly = users_data.merge(cta_data, on=['landing_page', 'mes', 'fuente'], how='left')
+                    else:
+                        merged_monthly = users_data.merge(cta_data, on=['landing_page', 'mes'], how='left')
                     
                     # Rellenar valores nulos
                     merged_monthly['cta_clicks'] = merged_monthly['cta_clicks'].fillna(0).astype(int)
@@ -431,16 +583,28 @@ def main():
                     # Calcular CTR
                     merged_monthly['CTR'] = (merged_monthly['cta_clicks'] / merged_monthly['total_users'] * 100).round(2)
                     
+                    # Mostrar información sobre análisis por fuente
+                    if has_source_analysis:
+                        sources_found = merged_monthly['fuente'].unique()
+                        st.info(f"🎯 **Análisis por fuente activado!** Fuentes detectadas: {', '.join(sources_found)}")
+                    
                     # Análisis temporal
                     st.markdown("---")
                     st.subheader("📈 Análisis de Tendencias Temporales")
                     
                     # Métricas resumen por mes
-                    monthly_summary = merged_monthly.groupby('mes').agg({
-                        'total_users': 'sum',
-                        'cta_clicks': 'sum', 
-                        'CTR': 'mean'
-                    }).round(2)
+                    if has_source_analysis:
+                        monthly_summary = merged_monthly.groupby('mes').agg({
+                            'total_users': 'sum',
+                            'cta_clicks': 'sum', 
+                            'CTR': 'mean'
+                        }).round(2)
+                    else:
+                        monthly_summary = merged_monthly.groupby('mes').agg({
+                            'total_users': 'sum',
+                            'cta_clicks': 'sum', 
+                            'CTR': 'mean'
+                        }).round(2)
                     
                     # Ordenar por mes
                     month_order = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
@@ -461,24 +625,75 @@ def main():
                     # Gráficos principales
                     st.subheader("📈 Visualizaciones Temporales")
                     
-                    col1, col2 = st.columns(2)
+                    if has_source_analysis:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Gráfico de tendencias CTR general
+                            fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR General por Mes')
+                            st.plotly_chart(fig_ctr, use_container_width=True)
+                        
+                        with col2:
+                            # Gráfico de tendencias por fuente
+                            fig_source_ctr = create_source_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Fuente y Mes')
+                            st.plotly_chart(fig_source_ctr, use_container_width=True)
+                        
+                        # Análisis por fuente
+                        st.subheader("🎯 Análisis por Fuente de Tráfico")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Performance por fuente
+                            fig_source_performance = create_source_performance_chart(merged_monthly, 'CTR Promedio por Fuente de Tráfico')
+                            st.plotly_chart(fig_source_performance, use_container_width=True)
+                        
+                        with col2:
+                            # Distribución de tráfico por fuente
+                            fig_source_dist = create_source_distribution(merged_monthly, 'Distribución de Usuarios por Fuente')
+                            st.plotly_chart(fig_source_dist, use_container_width=True)
+                        
+                        # Heatmap por fuente
+                        fig_source_heatmap = create_source_heatmap(merged_monthly, 'CTR', 'Heatmap CTR: Fuentes vs Meses')
+                        st.plotly_chart(fig_source_heatmap, use_container_width=True)
+                        
+                        # Filtro por fuente
+                        st.subheader("🔍 Análisis Filtrado por Fuente")
+                        available_sources = ['Todas'] + list(merged_monthly['fuente'].unique())
+                        selected_source = st.selectbox("Selecciona una fuente:", available_sources)
+                        
+                        if selected_source != 'Todas':
+                            filtered_monthly = merged_monthly[merged_monthly['fuente'] == selected_source]
+                            st.write(f"**Análisis para: {selected_source}**")
+                            
+                            # Métricas específicas de la fuente
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Total Usuarios", f"{filtered_monthly['total_users'].sum():,}")
+                            with col2:
+                                st.metric("Total Clicks CTA", f"{filtered_monthly['cta_clicks'].sum():,}")
+                            with col3:
+                                st.metric("CTR Promedio", f"{filtered_monthly['CTR'].mean():.2f}%")
                     
-                    with col1:
-                        # Gráfico de tendencias CTR
-                        fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
-                        st.plotly_chart(fig_ctr, use_container_width=True)
-                    
-                    with col2:
-                        # Gauge Chart CTR Promedio
-                        avg_ctr = merged_monthly['CTR'].mean()
-                        fig_gauge = create_gauge_chart(avg_ctr, f'CTR Promedio General: {avg_ctr:.2f}%')
-                        st.plotly_chart(fig_gauge, use_container_width=True)
+                    else:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Gráfico de tendencias CTR
+                            fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
+                            st.plotly_chart(fig_ctr, use_container_width=True)
+                        
+                        with col2:
+                            # Gauge Chart CTR Promedio
+                            avg_ctr = merged_monthly['CTR'].mean()
+                            fig_gauge = create_gauge_chart(avg_ctr, f'CTR Promedio General: {avg_ctr:.2f}%')
+                            st.plotly_chart(fig_gauge, use_container_width=True)
                     
                     # Gráfico de volúmenes mensuales
                     fig_volume = create_monthly_volume_chart(merged_monthly, 'Volúmenes Mensuales: Usuarios vs Clicks CTA')
                     st.plotly_chart(fig_volume, use_container_width=True)
                     
-                    # Heatmap
+                    # Heatmap de landing pages
                     st.subheader("🔥 Mapa de Calor - Top 10 Landing Pages")
                     fig_heatmap_ctr = create_heatmap(merged_monthly, 'CTR', 'Heatmap CTR por Landing Page y Mes')
                     st.plotly_chart(fig_heatmap_ctr, use_container_width=True)
@@ -511,18 +726,33 @@ def main():
                     # Tabla detallada completa
                     st.subheader("📋 Datos Detallados por Mes y Landing Page")
                     
-                    # Filtro por mes
-                    selected_month = st.selectbox("Filtrar por mes:", ['Todos'] + complete_months)
+                    # Filtros
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        selected_month = st.selectbox("Filtrar por mes:", ['Todos'] + complete_months)
+                    with col2:
+                        if has_source_analysis:
+                            available_sources_detail = ['Todas'] + list(merged_monthly['fuente'].unique())
+                            selected_source_detail = st.selectbox("Filtrar por fuente:", available_sources_detail, key="detail_source")
+                        else:
+                            selected_source_detail = 'Todas'
                     
+                    # Aplicar filtros
+                    filtered_data = merged_monthly.copy()
                     if selected_month != 'Todos':
-                        filtered_data = merged_monthly[merged_monthly['mes'] == selected_month]
-                    else:
-                        filtered_data = merged_monthly
+                        filtered_data = filtered_data[filtered_data['mes'] == selected_month]
+                    if has_source_analysis and selected_source_detail != 'Todas':
+                        filtered_data = filtered_data[filtered_data['fuente'] == selected_source_detail]
                     
                     # Mostrar datos filtrados
-                    display_columns = ['mes', 'landing_page', 'total_users', 'cta_clicks', 'CTR']
-                    display_df = filtered_data[display_columns].copy()
-                    display_df.columns = ['Mes', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
+                    if has_source_analysis:
+                        display_columns = ['mes', 'fuente', 'landing_page', 'total_users', 'cta_clicks', 'CTR']
+                        display_df = filtered_data[display_columns].copy()
+                        display_df.columns = ['Mes', 'Fuente', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
+                    else:
+                        display_columns = ['mes', 'landing_page', 'total_users', 'cta_clicks', 'CTR']
+                        display_df = filtered_data[display_columns].copy()
+                        display_df.columns = ['Mes', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
                     
                     st.dataframe(
                         display_df.style.format({
@@ -556,10 +786,13 @@ def main():
         # Información sobre los archivos requeridos
         with st.expander("ℹ️ Información sobre los archivos CSV requeridos"):
             st.markdown("""
-            **Para el análisis necesitas 2 archivos CSV:**
+            **Formato con fuente de tráfico (recomendado):**
+            - `Fuente de la sesión` | `page_path` | `Total de usuarios`
+            - Permite identificar el origen del "(not set)" y analizar por canal
             
-            1. **Clicks CTA**: Datos de usuarios que hicieron click en el Call to Action
-            2. **Usuarios**: Total de usuarios únicos que visitaron cada landing page  
+            **Formato básico:**
+            - `page_path` | `Total de usuarios`
+            - Análisis general sin segmentación por fuente
             
             **Métrica calculada:**
             - **CTR**: (Clicks CTA / Total Usuarios) × 100
@@ -586,63 +819,112 @@ def main():
         if cta_file and users_file:
             with st.spinner('Procesando archivos...'):
                 try:
-                    cta_df = read_csv_with_header_detection_and_clean(cta_file)
-                    users_df = read_csv_with_header_detection_and_clean(users_file)
+                    cta_df, has_source_cta = read_csv_with_header_detection_and_clean(cta_file)
+                    users_df, has_source_users = read_csv_with_header_detection_and_clean(users_file)
+                    
+                    # Determinar si tenemos análisis por fuente
+                    has_source_analysis = has_source_cta or has_source_users
+                    
                 except Exception as e:
                     st.error(f"Error al leer los archivos CSV: {e}")
                     return
 
-                # Normalizar nombres de columnas para evitar errores por mayúsculas/minúsculas
+                # Normalizar nombres de columnas
                 cta_df.columns = [col.strip().lower() for col in cta_df.columns]
                 users_df.columns = [col.strip().lower() for col in users_df.columns]
 
+                # Buscar columnas
                 cta_page_col = find_column(cta_df, ['page_path', 'pagina', 'url', 'ruta'])
                 cta_clicks_col = find_column(cta_df, ['cta_clicks', 'clicks', 'clics', 'clicks_cta', 'total de usuarios', 'total_usuarios'])
                 users_page_col = find_column(users_df, ['page_path', 'pagina', 'url', 'ruta'])
                 users_total_col = find_column(users_df, ['total_usuarios', 'usuarios', 'total users', 'total de usuarios', 'usuarios únicos', 'usuarios_unicos'])
+                
+                # Buscar columnas de fuente si existen
+                cta_source_col = find_column(cta_df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source_cta else None
+                users_source_col = find_column(users_df, ['fuente', 'source', 'canal', 'channel', 'medium']) if has_source_users else None
 
                 if not all([cta_page_col, cta_clicks_col, users_page_col, users_total_col]):
                     st.error("No se encontraron las columnas necesarias en los archivos CSV.")
                     return
 
-                # Filtrar solo las columnas necesarias y limpiar datos
-                cta_df = cta_df[[cta_page_col, cta_clicks_col]].copy()
-                users_df = users_df[[users_page_col, users_total_col]].copy()
-                
-                cta_df.columns = ['landing_page', 'cta_clicks']
-                users_df.columns = ['landing_page', 'total_users']
+                # Procesar datos según el formato
+                if has_source_analysis:
+                    # Formato con fuente
+                    if has_source_cta and cta_source_col:
+                        cta_df = cta_df[[cta_source_col, cta_page_col, cta_clicks_col]].copy()
+                        cta_df.columns = ['fuente', 'landing_page', 'cta_clicks']
+                    else:
+                        cta_df = cta_df[[cta_page_col, cta_clicks_col]].copy()
+                        cta_df.columns = ['landing_page', 'cta_clicks']
+                        cta_df['fuente'] = 'no especificado'
+                    
+                    if has_source_users and users_source_col:
+                        users_df = users_df[[users_source_col, users_page_col, users_total_col]].copy()
+                        users_df.columns = ['fuente', 'landing_page', 'total_users']
+                    else:
+                        users_df = users_df[[users_page_col, users_total_col]].copy()
+                        users_df.columns = ['landing_page', 'total_users']
+                        users_df['fuente'] = 'no especificado'
+                    
+                    # Limpiar datos
+                    cta_df['landing_page'] = clean_column(cta_df, 'landing_page')
+                    cta_df['fuente'] = clean_column(cta_df, 'fuente')
+                    users_df['landing_page'] = clean_column(users_df, 'landing_page')
+                    users_df['fuente'] = clean_column(users_df, 'fuente')
+                    
+                    # Merge con fuente
+                    merged_df = pd.merge(users_df, cta_df, on=['landing_page', 'fuente'], how='left')
+                    
+                else:
+                    # Formato básico sin fuente
+                    cta_df = cta_df[[cta_page_col, cta_clicks_col]].copy()
+                    users_df = users_df[[users_page_col, users_total_col]].copy()
+                    
+                    cta_df.columns = ['landing_page', 'cta_clicks']
+                    users_df.columns = ['landing_page', 'total_users']
+                    
+                    # Limpiar datos
+                    cta_df['landing_page'] = clean_column(cta_df, 'landing_page')
+                    users_df['landing_page'] = clean_column(users_df, 'landing_page')
+                    
+                    # Merge básico
+                    merged_df = pd.merge(users_df, cta_df, on='landing_page', how='left')
 
-                # Limpiar espacios y convertir a minúsculas para merge
-                cta_df['landing_page'] = clean_column(cta_df, 'landing_page')
-                users_df['landing_page'] = clean_column(users_df, 'landing_page')
-
-                # Eliminar filas vacías o con valores nulos
-                cta_df = cta_df.dropna(subset=['landing_page', 'cta_clicks'])
-                users_df = users_df.dropna(subset=['landing_page', 'total_users'])
-
-                # Convertir a numérico los valores (si hay error, poner 0)
-                cta_df['cta_clicks'] = pd.to_numeric(cta_df['cta_clicks'], errors='coerce').fillna(0).astype(int)
-                users_df['total_users'] = pd.to_numeric(users_df['total_users'], errors='coerce').fillna(0).astype(int)
-
-                # Unir los datos por landing_page
-                merged_df = pd.merge(users_df, cta_df, on='landing_page', how='left')
-                
-                # Rellenar valores nulos con 0
-                merged_df['cta_clicks'] = merged_df['cta_clicks'].fillna(0).astype(int)
+                # Limpiar datos
+                merged_df = merged_df.dropna(subset=['landing_page'])
+                merged_df['cta_clicks'] = pd.to_numeric(merged_df['cta_clicks'], errors='coerce').fillna(0).astype(int)
+                merged_df['total_users'] = pd.to_numeric(merged_df['total_users'], errors='coerce').fillna(0).astype(int)
                 
                 # Calcular CTR
                 merged_df['CTR'] = (merged_df['cta_clicks'] / merged_df['total_users'] * 100).round(2)
+                
+                # Mostrar información sobre análisis por fuente
+                if has_source_analysis:
+                    sources_found = merged_df['fuente'].unique()
+                    st.info(f"🎯 **Análisis por fuente activado!** Fuentes detectadas: {', '.join(sources_found)}")
 
             # Métricas principales
             st.markdown('<div class="result-section">', unsafe_allow_html=True)
             st.subheader("📊 Métricas Principales")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Landing Pages", len(merged_df))
-            with col2:
-                st.metric("Total Clicks CTA", f"{merged_df['cta_clicks'].sum():,}")
-            with col3:
-                st.metric("CTR Promedio", f"{merged_df['CTR'].mean():.2f}%")
+            
+            if has_source_analysis:
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Landing Pages", len(merged_df))
+                with col2:
+                    st.metric("Total Clicks CTA", f"{merged_df['cta_clicks'].sum():,}")
+                with col3:
+                    st.metric("CTR Promedio", f"{merged_df['CTR'].mean():.2f}%")
+                with col4:
+                    st.metric("Fuentes de Tráfico", len(merged_df['fuente'].unique()))
+            else:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Landing Pages", len(merged_df))
+                with col2:
+                    st.metric("Total Clicks CTA", f"{merged_df['cta_clicks'].sum():,}")
+                with col3:
+                    st.metric("CTR Promedio", f"{merged_df['CTR'].mean():.2f}%")
 
             # Visualizaciones principales
             st.subheader("📈 Análisis Visual")
@@ -658,12 +940,53 @@ def main():
                 # Distribución de tráfico
                 fig_traffic = create_traffic_distribution(merged_df, 'Distribución de Tráfico por Landing Page')
                 st.plotly_chart(fig_traffic, use_container_width=True)
+            
+            # Análisis por fuente si está disponible
+            if has_source_analysis:
+                st.subheader("🎯 Análisis por Fuente de Tráfico")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Performance por fuente
+                    fig_source_performance = create_source_performance_chart(merged_df, 'CTR Promedio por Fuente de Tráfico')
+                    st.plotly_chart(fig_source_performance, use_container_width=True)
+                
+                with col2:
+                    # Distribución por fuente
+                    fig_source_dist = create_source_distribution(merged_df, 'Distribución de Usuarios por Fuente')
+                    st.plotly_chart(fig_source_dist, use_container_width=True)
+                
+                # Filtro por fuente
+                st.subheader("🔍 Análisis Filtrado por Fuente")
+                available_sources = ['Todas'] + list(merged_df['fuente'].unique())
+                selected_source = st.selectbox("Selecciona una fuente:", available_sources, key="single_source")
+                
+                if selected_source != 'Todas':
+                    filtered_df = merged_df[merged_df['fuente'] == selected_source]
+                    st.write(f"**Análisis para: {selected_source}**")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Landing Pages", len(filtered_df))
+                    with col2:
+                        st.metric("Total Usuarios", f"{filtered_df['total_users'].sum():,}")
+                    with col3:
+                        st.metric("CTR Promedio", f"{filtered_df['CTR'].mean():.2f}%")
+                else:
+                    filtered_df = merged_df
 
             # Tabla de resultados
             st.subheader("📋 Resultados Detallados")
             
-            display_df = merged_df[['landing_page', 'total_users', 'cta_clicks', 'CTR']].copy()
-            display_df.columns = ['Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
+            display_df = merged_df.copy() if not has_source_analysis or selected_source == 'Todas' else filtered_df.copy()
+            
+            if has_source_analysis:
+                display_df = display_df[['fuente', 'landing_page', 'total_users', 'cta_clicks', 'CTR']].copy()
+                display_df.columns = ['Fuente', 'Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
+            else:
+                display_df = display_df[['landing_page', 'total_users', 'cta_clicks', 'CTR']].copy()
+                display_df.columns = ['Landing Page', 'Total Usuarios', 'Clicks CTA', 'CTR (%)']
             
             st.dataframe(
                 display_df.style.format({
@@ -676,36 +999,74 @@ def main():
 
             # Top 5 Landing Pages por CTR
             st.subheader("🏆 Top 5 Landing Pages por CTR")
-            top_ctr = merged_df.nlargest(5, 'CTR')[['landing_page', 'CTR']]
-            top_ctr.columns = ['Landing Page', 'CTR (%)']
-            st.dataframe(top_ctr.style.format({'CTR (%)': '{:.2f}%'}))
+            top_ctr = merged_df.nlargest(5, 'CTR')
+            if has_source_analysis:
+                top_ctr_display = top_ctr[['fuente', 'landing_page', 'CTR']].copy()
+                top_ctr_display.columns = ['Fuente', 'Landing Page', 'CTR (%)']
+            else:
+                top_ctr_display = top_ctr[['landing_page', 'CTR']].copy()
+                top_ctr_display.columns = ['Landing Page', 'CTR (%)']
+            
+            st.dataframe(top_ctr_display.style.format({'CTR (%)': '{:.2f}%'}))
 
             # Análisis adicional
             st.subheader("🔍 Insights Adicionales")
             
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric(
-                    "Mejor CTR", 
-                    f"{merged_df['CTR'].max():.2f}%",
-                    f"Landing: {merged_df.loc[merged_df['CTR'].idxmax(), 'landing_page'][:20]}..."
-                )
-            
-            with col2:
-                st.metric(
-                    "Mediana CTR", 
-                    f"{merged_df['CTR'].median():.2f}%",
-                    f"50% están por encima"
-                )
-            
-            with col3:
-                high_performers = len(merged_df[merged_df['CTR'] > merged_df['CTR'].mean()])
-                st.metric(
-                    "Sobre Promedio", 
-                    f"{high_performers}",
-                    f"de {len(merged_df)} landing pages"
-                )
+            if has_source_analysis:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Mejor CTR", 
+                        f"{merged_df['CTR'].max():.2f}%",
+                        f"Landing: {merged_df.loc[merged_df['CTR'].idxmax(), 'landing_page'][:15]}..."
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Mejor Fuente", 
+                        f"{merged_df.groupby('fuente')['CTR'].mean().idxmax()}",
+                        f"{merged_df.groupby('fuente')['CTR'].mean().max():.2f}% CTR"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Mediana CTR", 
+                        f"{merged_df['CTR'].median():.2f}%",
+                        f"50% están por encima"
+                    )
+                
+                with col4:
+                    high_performers = len(merged_df[merged_df['CTR'] > merged_df['CTR'].mean()])
+                    st.metric(
+                        "Sobre Promedio", 
+                        f"{high_performers}",
+                        f"de {len(merged_df)} registros"
+                    )
+            else:
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric(
+                        "Mejor CTR", 
+                        f"{merged_df['CTR'].max():.2f}%",
+                        f"Landing: {merged_df.loc[merged_df['CTR'].idxmax(), 'landing_page'][:20]}..."
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Mediana CTR", 
+                        f"{merged_df['CTR'].median():.2f}%",
+                        f"50% están por encima"
+                    )
+                
+                with col3:
+                    high_performers = len(merged_df[merged_df['CTR'] > merged_df['CTR'].mean()])
+                    st.metric(
+                        "Sobre Promedio", 
+                        f"{high_performers}",
+                        f"de {len(merged_df)} landing pages"
+                    )
 
             # Opción para descargar
             st.download_button(
