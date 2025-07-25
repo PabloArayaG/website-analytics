@@ -166,6 +166,50 @@ def create_trend_chart(df, metric, title):
     
     return fig
 
+def create_monthly_volume_chart(df, title):
+    """
+    Crea un gráfico de barras para volúmenes mensuales
+    """
+    monthly_totals = df.groupby('mes').agg({
+        'total_users': 'sum',
+        'cta_clicks': 'sum'
+    }).reset_index()
+    
+    # Ordenar por mes
+    month_order = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    monthly_totals['mes'] = pd.Categorical(monthly_totals['mes'], categories=month_order, ordered=True)
+    monthly_totals = monthly_totals.sort_values('mes')
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name='Total Usuarios',
+        x=monthly_totals['mes'],
+        y=monthly_totals['total_users'],
+        marker_color='lightblue',
+        yaxis='y'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name='Clicks CTA',
+        x=monthly_totals['mes'],
+        y=monthly_totals['cta_clicks'],
+        marker_color='orange',
+        yaxis='y2'
+    ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title="Mes",
+        yaxis=dict(title="Total Usuarios", side="left"),
+        yaxis2=dict(title="Clicks CTA", side="right", overlaying="y"),
+        hovermode='x unified',
+        barmode='group'
+    )
+    
+    return fig
+
 def create_heatmap(df, metric, title):
     """
     Crea un heatmap de landing pages vs meses
@@ -196,6 +240,123 @@ def create_heatmap(df, metric, title):
         xaxis_title="Mes",
         yaxis_title="Landing Page"
     )
+    
+    return fig
+
+def create_top_performers_chart(df, metric, title, top_n=10):
+    """
+    Crea un gráfico de barras horizontales para top performers
+    """
+    top_data = df.nlargest(top_n, metric)
+    
+    fig = px.bar(top_data, 
+                 x=metric, 
+                 y='landing_page', 
+                 orientation='h',
+                 title=title,
+                 color=metric,
+                 color_continuous_scale='Blues')
+    
+    fig.update_layout(
+        yaxis_title="Landing Page",
+        xaxis_title=f"{metric} (%)" if 'CTR' in metric else metric,
+        height=400
+    )
+    
+    return fig
+
+def create_scatter_plot(df, title):
+    """
+    Crea un scatter plot de usuarios vs clicks con CTR como color
+    """
+    fig = px.scatter(df, 
+                     x='total_users', 
+                     y='cta_clicks',
+                     color='CTR',
+                     size='total_users',
+                     hover_data=['landing_page'],
+                     title=title,
+                     color_continuous_scale='Viridis')
+    
+    fig.update_layout(
+        xaxis_title="Total Usuarios",
+        yaxis_title="Clicks CTA"
+    )
+    
+    return fig
+
+def create_ctr_distribution(df, title):
+    """
+    Crea un histograma de distribución del CTR
+    """
+    fig = px.histogram(df, 
+                       x='CTR', 
+                       nbins=20,
+                       title=title,
+                       color_discrete_sequence=['skyblue'])
+    
+    fig.update_layout(
+        xaxis_title="CTR (%)",
+        yaxis_title="Número de Landing Pages",
+        showlegend=False
+    )
+    
+    # Añadir línea de promedio
+    mean_ctr = df['CTR'].mean()
+    fig.add_vline(x=mean_ctr, line_dash="dash", line_color="red", 
+                  annotation_text=f"Promedio: {mean_ctr:.2f}%")
+    
+    return fig
+
+def create_traffic_distribution(df, title):
+    """
+    Crea un gráfico de pastel para distribución de tráfico
+    """
+    # Tomar top 8 + Others
+    top_8 = df.nlargest(8, 'total_users')
+    others_sum = df[~df.index.isin(top_8.index)]['total_users'].sum()
+    
+    if others_sum > 0:
+        others_row = pd.DataFrame({
+            'landing_page': ['Otros'],
+            'total_users': [others_sum]
+        })
+        pie_data = pd.concat([top_8[['landing_page', 'total_users']], others_row])
+    else:
+        pie_data = top_8[['landing_page', 'total_users']]
+    
+    fig = px.pie(pie_data, 
+                 values='total_users', 
+                 names='landing_page',
+                 title=title)
+    
+    return fig
+
+def create_gauge_chart(value, title):
+    """
+    Crea un gráfico de gauge para CTR promedio
+    """
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number+delta",
+        value = value,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': title},
+        delta = {'reference': 2.5},  # CTR promedio esperado
+        gauge = {
+            'axis': {'range': [None, 10]},
+            'bar': {'color': "darkblue"},
+            'steps': [
+                {'range': [0, 2], 'color': "lightgray"},
+                {'range': [2, 4], 'color': "yellow"},
+                {'range': [4, 10], 'color': "green"}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 2.5
+            }
+        }
+    ))
     
     return fig
 
@@ -297,9 +458,25 @@ def main():
                         use_container_width=True
                     )
                     
-                    # Gráfico de tendencias
-                    fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
-                    st.plotly_chart(fig_ctr, use_container_width=True)
+                    # Gráficos principales
+                    st.subheader("📈 Visualizaciones Temporales")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Gráfico de tendencias CTR
+                        fig_ctr = create_trend_chart(merged_monthly, 'CTR', 'Evolución del CTR por Mes')
+                        st.plotly_chart(fig_ctr, use_container_width=True)
+                    
+                    with col2:
+                        # Gauge Chart CTR Promedio
+                        avg_ctr = merged_monthly['CTR'].mean()
+                        fig_gauge = create_gauge_chart(avg_ctr, f'CTR Promedio General: {avg_ctr:.2f}%')
+                        st.plotly_chart(fig_gauge, use_container_width=True)
+                    
+                    # Gráfico de volúmenes mensuales
+                    fig_volume = create_monthly_volume_chart(merged_monthly, 'Volúmenes Mensuales: Usuarios vs Clicks CTA')
+                    st.plotly_chart(fig_volume, use_container_width=True)
                     
                     # Heatmap
                     st.subheader("🔥 Mapa de Calor - Top 10 Landing Pages")
@@ -467,6 +644,33 @@ def main():
             with col3:
                 st.metric("CTR Promedio", f"{merged_df['CTR'].mean():.2f}%")
 
+            # Visualizaciones principales
+            st.subheader("📈 Análisis Visual")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Top performers
+                fig_top = create_top_performers_chart(merged_df, 'CTR', 'Top 10 Landing Pages por CTR')
+                st.plotly_chart(fig_top, use_container_width=True)
+            
+            with col2:
+                # Distribución del CTR
+                fig_dist = create_ctr_distribution(merged_df, 'Distribución del CTR')
+                st.plotly_chart(fig_dist, use_container_width=True)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Scatter plot
+                fig_scatter = create_scatter_plot(merged_df, 'Relación Usuarios vs Clicks CTA')
+                st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            with col2:
+                # Distribución de tráfico
+                fig_traffic = create_traffic_distribution(merged_df, 'Distribución de Tráfico por Landing Page')
+                st.plotly_chart(fig_traffic, use_container_width=True)
+
             # Tabla de resultados
             st.subheader("📋 Resultados Detallados")
             
@@ -487,6 +691,33 @@ def main():
             top_ctr = merged_df.nlargest(5, 'CTR')[['landing_page', 'CTR']]
             top_ctr.columns = ['Landing Page', 'CTR (%)']
             st.dataframe(top_ctr.style.format({'CTR (%)': '{:.2f}%'}))
+
+            # Análisis adicional
+            st.subheader("🔍 Insights Adicionales")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric(
+                    "Mejor CTR", 
+                    f"{merged_df['CTR'].max():.2f}%",
+                    f"Landing: {merged_df.loc[merged_df['CTR'].idxmax(), 'landing_page'][:20]}..."
+                )
+            
+            with col2:
+                st.metric(
+                    "Mediana CTR", 
+                    f"{merged_df['CTR'].median():.2f}%",
+                    f"50% están por encima"
+                )
+            
+            with col3:
+                high_performers = len(merged_df[merged_df['CTR'] > merged_df['CTR'].mean()])
+                st.metric(
+                    "Sobre Promedio", 
+                    f"{high_performers}",
+                    f"de {len(merged_df)} landing pages"
+                )
 
             # Opción para descargar
             st.download_button(
